@@ -1,0 +1,17 @@
+# --- Ignore Data (Teammates can download this locally) ---
+data/
+
+# --- Ignore Large Model Weights (Usually shared via Drive/Cloud) ---
+checkpoints/*.pth
+
+# --- Ignore Python Junk ---
+__pycache__/
+*.pyc
+.DS_Store
+
+# --- Ignore Notebook Checkpoints ---
+.ipynb_checkpoints/
+
+# --- Ignore Virtual Environments ---
+env/
+venv/
