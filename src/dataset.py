@@ -1,55 +1,53 @@
 import torch
-import numpy as np
-import pickle
-import os
-from torch.utils.data import Dataset, Subset
 from torchvision import datasets, transforms
-from sklearn.model_selection import train_test_split
+from torch.utils.data import Subset
+import numpy as np
+import os
 
-class CIFAR10HDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
-        self.root_dir = os.path.abspath(root_dir)
-        self.transform = transform
-        
-        labels_path = os.path.join(self.root_dir, 'cifar10h_labels.npy')
-        if not os.path.exists(labels_path):
-            raise FileNotFoundError(f"Label file not found at {labels_path}")
-            
-        self.soft_labels = np.load(labels_path)
-        self.soft_labels = self.soft_labels / self.soft_labels.sum(axis=1, keepdims=True)
-        
-        cifar_path = os.path.join(self.root_dir, 'cifar-10-batches-py', 'test_batch')
-        alt_path = os.path.join(self.root_dir, 'cifar-10-python', 'cifar-10-batches-py', 'test_batch')
-        
-        if os.path.exists(cifar_path):
-            final_path = cifar_path
-        elif os.path.exists(alt_path):
-            final_path = alt_path
-        else:
-            raise FileNotFoundError(f"CIFAR-10 test_batch not found.")
-
-        with open(final_path, 'rb') as f:
-            entry = pickle.load(f, encoding='latin1')
-            self.images = entry['data'].reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
-
-    def __len__(self):
-        return len(self.images)
-
-    def __getitem__(self, idx):
-        img = self.images[idx]
-        label = torch.tensor(self.soft_labels[idx], dtype=torch.float32)
-        
-        if self.transform:
-            img = self.transform(img)
-            
-        return img, label
-
-def get_splits(root_dir, transform=None):
-    datasets.CIFAR10(root=root_dir, train=False, download=True)
-    full_dataset = CIFAR10HDataset(root_dir, transform)
+def get_splits(root_dir='data', transform=None, val_split=0.1):
+    # Dynamic path resolution to handle running from project root or experiments folder
+    current_path = os.path.abspath(os.getcwd())
+    base_path = os.path.dirname(current_path) if current_path.endswith('experiments') else current_path
+    final_root = os.path.join(base_path, 'data')
     
-    indices = np.arange(10000)
-    train_idx, temp_idx = train_test_split(indices, train_size=6000, random_state=42)
-    val_idx, test_idx = train_test_split(temp_idx, train_size=2000, random_state=42)
+    cifar_path = os.path.join(final_root, 'cifar10')
     
-    return Subset(full_dataset, train_idx), Subset(full_dataset, val_idx), Subset(full_dataset, test_idx)
+    # Load CIFAR-10
+    full_dataset = datasets.CIFAR10(root=cifar_path, train=True, download=False, transform=transform)
+    test_dataset = datasets.CIFAR10(root=cifar_path, train=False, download=False, transform=transform)
+    
+    # Load CIFAR-10H soft labels
+    soft_labels_path = os.path.join(final_root, 'cifar10h_labels.npy')
+    soft_labels_all = np.load(soft_labels_path)
+    
+    # Generate consistent indices for Train/Val split
+    num_train = len(full_dataset)
+    indices = list(range(num_train))
+    np.random.seed(42)
+    np.random.shuffle(indices)
+    split = int(np.floor(val_split * num_train))
+    train_idx, val_idx = indices[split:], indices[:split]
+    
+    class CIFAR10H(torch.utils.data.Dataset):
+        def __init__(self, base_dataset, labels=None):
+            self.base_dataset = base_dataset
+            # Convert labels to float for KL/JSD loss compatibility
+            self.labels = torch.from_numpy(labels).float() if labels is not None else None
+            
+        def __getitem__(self, index):
+            img, hard_label = self.base_dataset[index]
+            # Return soft labels if available (Test set), else return hard labels (Train/Val)
+            label = self.labels[index] if self.labels is not None else hard_label
+            return img, label
+            
+        def __len__(self):
+            return len(self.base_dataset)
+
+    # SUCCESS LOGIC: Wrap training and val with standard hard labels
+    train_set = Subset(CIFAR10H(full_dataset, labels=None), train_idx)
+    val_set = Subset(CIFAR10H(full_dataset, labels=None), val_idx)
+    
+    # Test set gets the final 10,000 soft labels from the .npy file
+    test_set = CIFAR10H(test_dataset, labels=soft_labels_all[-10000:])
+    
+    return train_set, val_set, test_set
